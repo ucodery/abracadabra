@@ -1,0 +1,10 @@
+[package]
+name = "abracadabra"
+description = "make development environments magically appear"
+homepage = "https://github.com/ucodery/abracadabra"
+version = "0.1.0"
+edition = "2021"
+repository = "https://github.com/ucodery/abracadabra"
+
+[dependencies]
+walkdir = "2.5"
