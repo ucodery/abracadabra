@@ -7,4 +7,7 @@ edition = "2021"
 repository = "https://github.com/ucodery/abracadabra"
 
 [dependencies]
+clap = { version = "4.5", features = ["derive"] }
+glob = "0.3"
+indexmap = "2.7"
 walkdir = "2.5"

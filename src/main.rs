@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs::File;
@@ -5,250 +6,344 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
-use walkdir::{DirEntry, WalkDir};
+use clap::Parser;
+use glob::Pattern;
+use indexmap::IndexSet;
+use walkdir::WalkDir;
 
-#[derive(Debug)]
-struct Language {
-    name: String,
-    present: bool,
-    extensions: Vec<OsString>,
-    develop: bool,
-    build_files: Vec<OsString>,
-    env_entry: String,
-    dev_env_entry: String,
-    post_env_commands: Vec<String>,
+#[derive(PartialEq, Eq, Hash)]
+enum PathMatch {
+    Extension(OsString),
+    Name(OsString),
+    Glob(Pattern),
 }
 
-impl Language {
-    fn inspect(&mut self, path: &Path) {
-        if let Some(ext) = path.extension() {
-            if self.extensions.iter().any(|e| e == ext) {
-                self.present = true;
+impl PathMatch {
+    fn matches(&self, path: &Path) -> bool {
+        match self {
+            PathMatch::Extension(ext) => {
+                if let Some(e) = path.extension() {
+                    e == ext
+                } else {
+                    false
+                }
             }
-        }
-
-        if let Some(file) = path.file_name() {
-            if self.build_files.iter().any(|b| b == file) {
-                self.develop = true;
+            PathMatch::Name(ful) => {
+                if let Some(f) = path.file_name() {
+                    f == ful
+                } else {
+                    false
+                }
             }
+            PathMatch::Glob(glb) => glb.matches_path(path),
         }
     }
-
-    fn env_needed(&self) -> Option<String> {
-        (self.present || self.develop).then_some(self.env_entry.clone())
-    }
-
-    fn dev_env_needed(&self) -> Option<String> {
-        self.develop.then_some(self.dev_env_entry.clone())
-    }
-
-    fn new_env_commands(&self) -> Option<Vec<String>> {
-        self.develop.then_some(self.post_env_commands.clone())
-    }
 }
 
-#[derive(Debug)]
-struct Languages {
-    c: Language,
-    go: Language,
-    perl: Language,
-    python: Language,
-    rust: Language,
+#[derive(Clone)]
+enum Action {
+    EnvBuild(String),
+    EnvRun(String),
+    Skip,
 }
 
-fn is_hidden(entry: &DirEntry) -> bool {
-    entry
-        .file_name()
-        .to_str()
-        .map(|s| s.starts_with("."))
-        .unwrap_or(false)
+fn c_actions() -> Vec<Action> {
+    vec![Action::EnvBuild(String::from(
+        "use flake \"github:the-nix-way/dev-templates?dir=c-cpp\"",
+    ))]
 }
 
-impl Languages {
-    fn find_from_filesystem(fs_start: &dyn AsRef<Path>) -> Self {
-        let mut new = Self {
-            c: Language {
-                name: String::from("C"),
-                present: false,
-                extensions: vec![OsString::from("c"), OsString::from("h")],
-                develop: false,
-                build_files: vec![],
-                env_entry: String::from("use flake \"github:the-nix-way/dev-templates?dir=c-cpp\""),
-                dev_env_entry: String::new(),
-                post_env_commands: Vec::new(),
-            },
-            go: Language {
-                name: String::from("Go"),
-                present: false,
-                extensions: vec![OsString::from("go")],
-                develop: false,
-                build_files: vec![
-                    OsString::from("go.mod"),
-                    OsString::from("go.sum"),
-                    OsString::from("go.work"),
-                ],
-                env_entry: String::from("use flake \"github:the-nix-way/dev-templates?dir=go\""),
-                dev_env_entry: String::new(),
-                post_env_commands: Vec::new(),
-            },
-            perl: Language {
-                name: String::from("Perl"),
-                present: false,
-                extensions: vec![
-                    OsString::from("pl"),
-                    OsString::from("pm"),
-                    OsString::from("pod"),
-                ],
-                develop: false,
-                build_files: vec![
-                    OsString::from("Makefile.pl"),
-                    OsString::from("Build.pl"),
-                    OsString::from("cpanfile"),
-                ],
-                env_entry: String::from("use flake \"github:the-nix-way/dev-templates?dir=perl\""),
-                dev_env_entry: String::new(),
-                post_env_commands: Vec::new(),
-            },
-            python: Language {
-                name: String::from("Python"),
-                present: false,
-                extensions: vec![
-                    OsString::from("py"),
-                    OsString::from("pyx"),
-                    OsString::from("pyw"),
-                    OsString::from("pyi"),
-                    OsString::from("ipy"),
-                    OsString::from("ipynb"),
-                ],
-                develop: false,
-                build_files: vec![
-                    OsString::from("pyproject.toml"),
-                    OsString::from("setup.py"),
-                    OsString::from("setup.cfg"),
-                    OsString::from("Pipfile"),
-                ],
-                env_entry: String::from(
-                    "use flake \"github:the-nix-way/dev-templates?dir=python\"\n\
-                     layout python",
-                ),
-                dev_env_entry: String::from("export PYTHONSTARTUP=~/.config/python/config.py"),
-                post_env_commands: vec![
-                    String::from("direnv exec . python -m pip install -U pip"),
-                    String::from(
-                        "direnv exec . python -m pip install ~/.config/python/requirements.txt",
-                    ),
-                    String::from("direnv exec . python -m pip install -e ."),
-                ],
-            },
-            rust: Language {
-                name: String::from("Rust"),
-                present: false,
-                extensions: vec![OsString::from("rs")],
-                develop: false,
-                build_files: vec![OsString::from("Cargo.toml")],
-                env_entry: String::from("use flake \"github:the-nix-way/dev-templates?dir=rust\""),
-                dev_env_entry: String::new(),
-                post_env_commands: Vec::new(),
-            },
-        };
-        for entry in WalkDir::new(fs_start)
-            .into_iter()
-            .filter_entry(|e| !is_hidden(e))
-            .filter_map(|e| e.ok())
-        {
-            new.c.inspect(entry.path());
-            new.go.inspect(entry.path());
-            new.perl.inspect(entry.path());
-            new.python.inspect(entry.path());
-            new.rust.inspect(entry.path());
-        }
-        new
-    }
+fn go_actions() -> Vec<Action> {
+    vec![Action::EnvBuild(String::from(
+        "use flake \"github:the-nix-way/dev-templates?dir=go\"",
+    ))]
+}
 
-    fn format_env_file(&self) -> Option<String> {
-        let format = vec![
-            self.c.env_needed(),
-            self.go.env_needed(),
-            self.perl.env_needed(),
-            self.python.env_needed(),
-            self.rust.env_needed(),
-            self.c.dev_env_needed(),
-            self.go.dev_env_needed(),
-            self.perl.dev_env_needed(),
-            self.python.dev_env_needed(),
-            self.rust.dev_env_needed(),
-        ]
+fn perl_actions() -> Vec<Action> {
+    vec![Action::EnvBuild(String::from(
+        "use flake \"github:the-nix-way/dev-templates?dir=perl\"",
+    ))]
+}
+
+fn python_actions() -> Vec<Action> {
+    vec![
+        Action::EnvBuild(String::from(
+            "use flake \"github:the-nix-way/dev-templates?dir=python\"",
+        )),
+        Action::EnvBuild(String::from("layout python")),
+    ]
+}
+
+fn python_dev_actions() -> Vec<Action> {
+    python_actions()
         .into_iter()
-        .flatten()
+        .chain([
+            Action::EnvBuild(String::from(
+                "export PYTHONSTARTUP=~/.config/python/config.py",
+            )),
+            Action::EnvRun(String::from("direnv exec . pip install -U pip")),
+            Action::EnvRun(String::from(
+                "direnv exec . pip install -r ~/.config/python/requirements.txt",
+            )),
+            Action::EnvRun(String::from("direnv exec . pip install -e .")),
+        ])
         .collect::<Vec<_>>()
-        .join("\n");
-
-        Some(format).filter(|s| !s.is_empty())
-    }
-
-    fn finish_env(&self) -> std::io::Result<()> {
-        Command::new("direnv").args(["allow", "."]).status()?;
-        for cmd in self
-            .c
-            .new_env_commands()
-            .iter()
-            .chain(
-                self.go.new_env_commands().iter().chain(
-                    self.perl.new_env_commands().iter().chain(
-                        self.python
-                            .new_env_commands()
-                            .iter()
-                            .chain(self.rust.new_env_commands().iter()),
-                    ),
-                ),
-            )
-            .flatten()
-        {
-            try_command(cmd);
-        }
-        Ok(())
-    }
 }
 
-fn try_command(cmd: &str) {
+fn rust_actions() -> Vec<Action> {
+    vec![Action::EnvBuild(String::from(
+        "use flake \"github:the-nix-way/dev-templates?dir=rust\"",
+    ))]
+}
+
+fn make_actions() -> HashMap<PathMatch, Vec<Action>> {
+    [
+        (
+            PathMatch::Glob(Pattern::new(".*").unwrap()),
+            vec![Action::Skip],
+        ),
+        (PathMatch::Extension(OsString::from("c")), c_actions()),
+        (PathMatch::Extension(OsString::from("h")), c_actions()),
+        (PathMatch::Extension(OsString::from("go")), go_actions()),
+        (PathMatch::Name(OsString::from("go.mod")), go_actions()),
+        (PathMatch::Name(OsString::from("go.sum")), go_actions()),
+        (PathMatch::Name(OsString::from("go.work")), go_actions()),
+        (PathMatch::Extension(OsString::from("pl")), perl_actions()),
+        (PathMatch::Extension(OsString::from("pm")), perl_actions()),
+        (PathMatch::Extension(OsString::from("pod")), perl_actions()),
+        (
+            PathMatch::Name(OsString::from("Makefile.pl")),
+            perl_actions(),
+        ),
+        (PathMatch::Name(OsString::from("Build.pl")), perl_actions()),
+        (PathMatch::Name(OsString::from("cpanfile")), perl_actions()),
+        (PathMatch::Extension(OsString::from("py")), python_actions()),
+        (
+            PathMatch::Extension(OsString::from("pyx")),
+            python_actions(),
+        ),
+        (
+            PathMatch::Extension(OsString::from("pyw")),
+            python_actions(),
+        ),
+        (
+            PathMatch::Extension(OsString::from("pyi")),
+            python_actions(),
+        ),
+        (
+            PathMatch::Extension(OsString::from("ipy")),
+            python_actions(),
+        ),
+        (
+            PathMatch::Extension(OsString::from("ipynb")),
+            python_actions(),
+        ),
+        (
+            PathMatch::Name(OsString::from("pyproject.toml")),
+            python_dev_actions(),
+        ),
+        (
+            PathMatch::Name(OsString::from("setup.py")),
+            python_dev_actions(),
+        ),
+        (
+            PathMatch::Name(OsString::from("setup.cfg")),
+            python_dev_actions(),
+        ),
+        (
+            PathMatch::Name(OsString::from("Pipfile")),
+            python_dev_actions(),
+        ),
+        (PathMatch::Extension(OsString::from("rs")), rust_actions()),
+        (
+            PathMatch::Name(OsString::from("Cargo.toml")),
+            rust_actions(),
+        ),
+    ]
+    .into_iter()
+    .collect::<HashMap<_, _>>()
+}
+
+fn build_actions(
+    actions: HashMap<PathMatch, Vec<Action>>,
+    fs_start: &dyn AsRef<Path>,
+) -> (Vec<String>, Vec<String>) {
+    let mut build_steps = IndexSet::new();
+    let mut run_steps = IndexSet::new();
+
+    let mut walk = WalkDir::new(fs_start).into_iter();
+    loop {
+        let entry = match walk.next() {
+            None => break,
+            Some(Err(_)) => continue,
+            Some(Ok(entry)) => entry,
+        };
+        let mut stop_recurse = false;
+        let mut build_additions = Vec::new();
+        let mut run_additions = Vec::new();
+
+        for (path_match, actions) in actions.iter() {
+            if path_match.matches(entry.path()) {
+                for action in actions {
+                    match action {
+                        Action::Skip => {
+                            stop_recurse = true;
+                        }
+                        Action::EnvBuild(build) => {
+                            build_additions.push(build.clone());
+                        }
+                        Action::EnvRun(run) => {
+                            run_additions.push(run.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        if stop_recurse {
+            if entry.file_type().is_dir() {
+                walk.skip_current_dir();
+            } // else just don't act on the file
+        } else {
+            for build in build_additions {
+                build_steps.insert(build);
+            }
+            for run in run_additions {
+                run_steps.insert(run);
+            }
+        }
+    }
+
+    (
+        build_steps.into_iter().collect::<Vec<_>>(),
+        run_steps.into_iter().collect::<Vec<_>>(),
+    )
+}
+
+fn finish_env(
+    commands: Vec<String>,
+    root: &Path,
+    execute: bool,
+    verbose: bool,
+    quiet: bool,
+) -> std::io::Result<()> {
+    let here = root.to_str().ok_or(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        "non-utf-8 pwd",
+    ))?;
+    try_command(
+        &("direnv allow ".to_owned() + here),
+        true,
+        execute,
+        verbose,
+        quiet,
+    )?;
+    for cmd in commands {
+        try_command(&cmd, false, execute, verbose, quiet)?;
+    }
+    Ok(())
+}
+
+fn try_command(
+    cmd: &str,
+    check: bool,
+    execute: bool,
+    verbose: bool,
+    quiet: bool,
+) -> std::io::Result<()> {
     let mut parts = cmd.split(" ");
-    let Some(program) = parts.next() else { return };
-    let mut process = &mut Command::new(program);
-    process = process.args(parts.collect::<Vec<_>>());
 
-    eprintln!("{:?}", process);
-    let _ = process.spawn();
-    // if !quiet
-    // process.status();
+    let Some(program) = parts.next() else {
+        return Ok(());
+    };
+    let mut command = &mut Command::new(program);
+    command = command.args(parts.collect::<Vec<_>>());
 
-    println!("{}", cmd);
+    if execute {
+        let status = if quiet {
+            command.output()?.status
+        } else {
+            if verbose {
+                eprintln!("Executing: {:?}", command);
+            }
+            command.status()?
+        };
+        if !status.success() {
+            if verbose {
+                eprintln!(
+                    "Command execution failed [{}]",
+                    status
+                        .code()
+                        .map(|s| s.to_string())
+                        .unwrap_or(" ".to_owned())
+                );
+            }
+            if check {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!(
+                        "Necessary command failed [{}] {:?}",
+                        status
+                            .code()
+                            .map(|s| s.to_string())
+                            .unwrap_or(" ".to_owned()),
+                        command
+                    ),
+                ));
+            }
+        }
+    } else {
+        eprintln!("Would execute: {:?}", command);
+    }
+    Ok(())
+}
+
+#[derive(Parser)]
+struct Cli {
+    #[arg(long)]
+    dry_run: bool,
+
+    #[arg(short, long, conflicts_with = "quiet")]
+    verbose: bool,
+
+    #[arg(short, long)]
+    quiet: bool,
 }
 
 fn main() -> std::io::Result<()> {
-    // TODO: HashMap
-    // TODO: capture current_dir once and reuse
     // TODO: look for .git; walk up too
     // TODO: use gitignore
-    // TODO: --dry-run
-    // TODO: --quiet; --verbose
+    let cli = Cli::parse();
     let cur_dir = env::current_dir()?;
-    let languages = Languages::find_from_filesystem(&cur_dir);
-    let format = languages.format_env_file();
 
-    if let Some(format) = format {
-        let envrc = Path::new(".envrc");
+    let actions = make_actions();
+    let (build_steps, run_steps) = build_actions(actions, &cur_dir);
+
+    if !build_steps.is_empty() {
+        let envrc = cur_dir.join(".envrc");
         if let Ok(true) = envrc.try_exists() {
-            eprintln!("Would write:\n{}", format);
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                "Existing .envrc in the way",
-            ));
+            let msg = format!("Existing {} in the way", envrc.display());
+            if cli.dry_run {
+                eprint!("Would error: ");
+                eprintln!("{}", msg);
+            } else {
+                return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, msg));
+            }
         }
-        eprintln!("Creating new .envrc file");
-        let mut envrc = File::create(envrc)?;
-        envrc.write_all(format.as_bytes())?;
 
-        languages.finish_env()?;
+        let format = build_steps.join("\n");
+        if cli.dry_run {
+            eprintln!("Would create new file: {}", envrc.display());
+            eprintln!("Would write out contents:\n{}\n", format);
+        } else {
+            eprintln!("Creating new file: {}", envrc.display());
+            let mut envrc = File::create(envrc)?;
+            envrc.write_all(format.as_bytes())?;
+        }
+
+        finish_env(run_steps, &cur_dir, !cli.dry_run, cli.verbose, cli.quiet)?;
+    } else if cli.verbose {
+        eprintln!("Found no Actions necessary, not creating a dev environment");
     }
     Ok(())
 }
