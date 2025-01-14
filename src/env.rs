@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use log::{debug,info,warn};
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::Write;
@@ -10,7 +11,7 @@ use walkdir::WalkDir;
 
 use crate::action::*;
 use crate::path_match::PathMatch;
-use crate::run::CommandLevel;
+use crate::run::CommandControl;
 
 fn c_actions() -> Actions {
     vec![Action::EnvBuild(String::from(
@@ -206,8 +207,7 @@ impl Env {
         if let Ok(true) = envrc.try_exists() {
             let msg = format!("Existing {} in the way", envrc.display());
             if !mutate {
-                eprint!("Would error: ");
-                eprintln!("{}", msg);
+                warn!("Would error: {}", msg);
             } else {
                 return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, msg));
             }
@@ -215,17 +215,17 @@ impl Env {
 
         let format = self.build_steps.join("\n");
         if !mutate {
-            eprintln!("Would create new file: {}", envrc.display());
-            eprintln!("Would write out contents:\n{}\n", format);
+            info!("Would create new file: {}", envrc.display());
+            info!("Would write out contents:\n{}", format);
         } else {
-            eprintln!("Creating new file: {}", envrc.display());
+            debug!("Creating new file: {}", envrc.display());
             let mut envrc = File::create(envrc)?;
             envrc.write_all(format.as_bytes())?;
         }
         Ok(true)
     }
 
-    pub fn setup(&self, runner: CommandLevel) -> std::io::Result<()> {
+    pub fn setup(&self, runner: CommandControl) -> std::io::Result<()> {
         let here = self.root.to_str().ok_or(std::io::Error::new(
             std::io::ErrorKind::Other,
             "non-utf-8 pwd",

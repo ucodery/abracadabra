@@ -8,6 +8,8 @@ repository = "https://github.com/ucodery/abracadabra"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
+colog = "1.3.0"
 glob = "0.3"
 indexmap = "2.7"
+log = "0.4.22"
 walkdir = "2.5"

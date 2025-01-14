@@ -1,19 +1,18 @@
+use log::{debug,info};
 use std::process::Command;
 
-pub struct CommandLevel {
+pub struct CommandControl {
     check: bool,
     execute: bool,
-    verbose: bool,
-    quiet: bool,
+    output: bool,
 }
 
-impl CommandLevel {
-    pub fn new(execute: bool, verbose: bool, quiet: bool) -> Self {
+impl CommandControl {
+    pub fn new(execute: bool, output: bool) -> Self {
         Self {
             check: false,
             execute,
-            verbose,
-            quiet,
+            output,
         }
     }
 
@@ -21,8 +20,7 @@ impl CommandLevel {
         Self {
             check: true,
             execute: self.execute,
-            verbose: self.verbose,
-            quiet: self.quiet,
+            output: self.output,
         }
     }
 
@@ -36,24 +34,20 @@ impl CommandLevel {
         command = command.args(parts.collect::<Vec<_>>());
 
         if self.execute {
-            let status = if self.quiet {
+            let status = if self.output {
                 command.output()?.status
             } else {
-                if self.verbose {
-                    eprintln!("Executing: {:?}", command);
-                }
+                debug!("Executing: {:?}", command);
                 command.status()?
             };
             if !status.success() {
-                if self.verbose {
-                    eprintln!(
-                        "Command execution failed [{}]",
-                        status
-                            .code()
-                            .map(|s| s.to_string())
-                            .unwrap_or(" ".to_owned())
-                    );
-                }
+                debug!(
+                    "Command execution failed [{}]",
+                    status
+                        .code()
+                        .map(|s| s.to_string())
+                        .unwrap_or(" ".to_owned())
+                );
                 if self.check {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::Other,
@@ -69,7 +63,7 @@ impl CommandLevel {
                 }
             }
         } else {
-            eprintln!("Would execute: {:?}", command);
+            info!("Would execute: {:?}", command);
         }
         Ok(())
     }
