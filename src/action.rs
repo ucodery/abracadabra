@@ -1,4 +1,4 @@
-#[derive(Clone)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum Action {
     EnvBuild(String),
     EnvRun(String),
