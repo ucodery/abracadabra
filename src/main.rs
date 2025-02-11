@@ -11,6 +11,9 @@ mod run;
 
 #[derive(Parser)]
 struct Cli {
+    #[arg(long)]
+    config: Option<String>,
+
     #[arg(long, conflicts_with = "quiet")]
     dry_run: bool,
 
@@ -41,7 +44,13 @@ fn _main() -> std::io::Result<()> {
 
     let cur_dir = std::env::current_dir()?;
 
-    let env = define::default_env().from_fs(cur_dir);
+    let config = if let Some(config_path) = cli.config {
+        define::toml_to_env(&config_path)?
+    } else {
+        define::default_env()
+    };
+
+    let env = config.from_fs(cur_dir);
 
     let runner = run::CommandControl::new(!cli.dry_run, cli.quiet);
 

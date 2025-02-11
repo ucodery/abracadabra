@@ -1,9 +1,90 @@
+//! # Abracadabra Configuration
+//!
+//! Abracadabra can be configured via a [TOML](https://toml.io) file `abracadabra.toml`
+//!
+//! The central component of the configuration file is the `events` array. This array is made up
+//! of `event` tables that instruct Abracadabra how to build a new environment. The other table
+//! used is `groups` which is a way to specify event actions in a way that makes them re-usable.
+//!
+//! # Events
+//! The `events` array is composed of `event` tables that instruct Abracadabra how to build a new
+//! coding environment one step at at time, and when to trigger each event.
+//!
+//! ## Event
+//! An event is composed of two parts: a target and an action
+//!
+//! ### Event target
+//! Each event must specify at least one target.
+//!
+//! The types of events are:
+//!
+//! - `name`: this event will match if a file system entry exactly matches this name
+//! - `extension`: this event will match if a file system entry has this as its (last) extension
+//! - `glob`: this event will match if a file system entry matches this glob
+//!
+//! Pro tip: event types accept one string, or an array of strings. So if you want the same action
+//! to match on multiple extensions, that can be done with one event.
+//!
+//! Some Examples:
+//!
+//! - `name = "Makefile"`
+//! - `glob = "[Bb]uild*"`
+//! - `extension = ["c", "cpp", "h"]`
+//!
+//! ### Event action
+//! Each event must specify at least one action
+//!
+//! There are two types of actions:
+//!
+//! - `action`: an explicit `action` table
+//! - `group`: a reference into the `group` table
+//!
+//! Some Examples:
+//!
+//! - `action = {run: "echo done"}`
+//! - `group = "action-defined-elsewhere"`
+//!
+//! ## Action
+//! Action tables are defined either as part of an `event`, or as a `group`. Both follow the same
+//! format.
+//!
+//! ### Build step
+//! A build step adds a single step to the building out of the new coding environment. Build steps
+//! should statically define the environment that will continue to live at this location.
+//!
+//! A build action example:
+//! `{build = "use flake"}`
+//!
+//! ### Run step
+//! A run step supplies a single command that will be executed once, after the coding environment
+//! is set up.
+//!
+//! A run action example:
+//! `{run = "brew cleanup"}`
+//!
+//! ### Skip step
+//! A skip step will cause Abracadabra to stop traversing the file system from the current path
+//! during event actualization.
+//!
+//! A skip action example:
+//! `{skip = true}`
+//!
+//! # Groups
+//! The `groups` table is a way to define event actions outside of individual events. It allows
+//! complex actions to be defined without overloading the definition of an event. It also allows
+//! multiple event targets to share the same action. Each entry in groups makes an alias for one
+//! or more actions that can be referenced in event tables with the `group` key.
+
+// TODO:
+// XDG_CONFIG
+
 use crate::{action, env, path_match};
 use glob::Pattern;
 use serde::{Deserialize, Deserializer};
 use std::collections::HashMap;
 use std::ffi::OsString;
-use toml;
+use std::fs::File;
+use std::io::prelude::Read;
 
 const DEFAULT_DEFINE: &str = r#"
 [school]
@@ -160,7 +241,7 @@ fn toml_action_to_actions(actions: TomlActions) -> Result<action::Actions, Strin
                 env_actions.push(action::Action::EnvRun(r));
             }
         }
-        if let Some(_) = act.skip {
+        if act.skip.is_some() {
             env_actions.push(action::Action::Skip);
         }
     }
@@ -175,7 +256,7 @@ fn toml_action_to_actions(actions: TomlActions) -> Result<action::Actions, Strin
 fn config_to_env(config: Config) -> Result<env::EnvBuilder, String> {
     let group_aliases: HashMap<String, action::Actions> = config
         .groups
-        .unwrap_or(HashMap::new())
+        .unwrap_or_default()
         .into_iter()
         .map(|(k, v)| match toml_action_to_actions(v) {
             Ok(a) => Ok((k, a)),
@@ -231,9 +312,12 @@ fn config_to_env(config: Config) -> Result<env::EnvBuilder, String> {
     Ok(env::EnvBuilder::raw_new(env))
 }
 
-pub fn toml_to_env(toml: &str) -> Result<env::EnvBuilder, String> {
-    let structured_toml = toml::from_str(toml).unwrap();
-    config_to_env(structured_toml)
+pub fn toml_to_env(toml: &str) -> std::io::Result<env::EnvBuilder> {
+    let mut file = File::open(toml)?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    let config = toml::from_str(&contents).unwrap();
+    config_to_env(config).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
 }
 
 pub fn default_env() -> env::EnvBuilder {
