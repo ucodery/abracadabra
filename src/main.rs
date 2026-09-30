@@ -1,15 +1,19 @@
-use log::{warn,error};
+use log::{error, warn};
 use std::process::ExitCode;
 
 use clap::Parser;
 
 mod action;
+mod define;
 mod env;
-mod run;
 mod path_match;
+mod run;
 
 #[derive(Parser)]
 struct Cli {
+    #[arg(long)]
+    config: Option<String>,
+
     #[arg(long, conflicts_with = "quiet")]
     dry_run: bool,
 
@@ -40,7 +44,13 @@ fn _main() -> std::io::Result<()> {
 
     let cur_dir = std::env::current_dir()?;
 
-    let env = env::EnvBuilder::new().from_fs(cur_dir);
+    let config = if let Some(config_path) = cli.config {
+        define::toml_to_env(&config_path)?
+    } else {
+        define::default_env()
+    };
+
+    let env = config.from_fs(cur_dir);
 
     let runner = run::CommandControl::new(!cli.dry_run, cli.quiet);
 
@@ -58,6 +68,6 @@ fn main() -> ExitCode {
         Err(error) => {
             error!("{}", error);
             ExitCode::FAILURE
-        },
+        }
     }
 }

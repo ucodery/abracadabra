@@ -3,7 +3,7 @@ use std::path::Path;
 
 use glob::Pattern;
 
-#[derive(PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub enum PathMatch {
     Extension(OsString),
     Name(OsString),

@@ -1,4 +1,4 @@
-use log::{debug,info};
+use log::{debug, info};
 use std::process::Command;
 
 pub struct CommandControl {

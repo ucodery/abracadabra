@@ -1,11 +1,9 @@
+use log::{debug, info, warn};
 use std::collections::HashMap;
-use log::{debug,info,warn};
-use std::ffi::OsString;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 
-use glob::Pattern;
 use indexmap::IndexSet;
 use walkdir::WalkDir;
 
@@ -13,126 +11,12 @@ use crate::action::*;
 use crate::path_match::PathMatch;
 use crate::run::CommandControl;
 
-fn c_actions() -> Actions {
-    vec![Action::EnvBuild(String::from(
-        "use flake \"github:the-nix-way/dev-templates?dir=c-cpp\"",
-    ))]
-}
-
-fn go_actions() -> Actions {
-    vec![Action::EnvBuild(String::from(
-        "use flake \"github:the-nix-way/dev-templates?dir=go\"",
-    ))]
-}
-
-fn perl_actions() -> Actions {
-    vec![Action::EnvBuild(String::from(
-        "use flake \"github:the-nix-way/dev-templates?dir=perl\"",
-    ))]
-}
-
-fn python_actions() -> Actions {
-    vec![
-        Action::EnvBuild(String::from(
-            "use flake \"github:the-nix-way/dev-templates?dir=python\"",
-        )),
-        Action::EnvBuild(String::from("layout python")),
-    ]
-}
-
-fn python_dev_actions() -> Actions {
-    python_actions()
-        .into_iter()
-        .chain([
-            Action::EnvBuild(String::from(
-                "export PYTHONSTARTUP=~/.config/python/config.py",
-            )),
-            Action::EnvRun(String::from("direnv exec . pip install -U pip")),
-            Action::EnvRun(String::from(
-                "direnv exec . pip install -r ~/.config/python/requirements.txt",
-            )),
-            Action::EnvRun(String::from("direnv exec . pip install -e .")),
-        ])
-        .collect()
-}
-
-fn rust_actions() -> Actions {
-    vec![Action::EnvBuild(String::from(
-        "use flake \"github:the-nix-way/dev-templates?dir=rust\"",
-    ))]
-}
-
+#[derive(Debug, PartialEq)]
 pub struct EnvBuilder(HashMap<PathMatch, Actions>);
 
 impl EnvBuilder {
-    pub fn new() -> Self {
-        Self(
-            [
-                (
-                    PathMatch::Glob(Pattern::new(".*").unwrap()),
-                    vec![Action::Skip],
-                ),
-                (PathMatch::Extension(OsString::from("c")), c_actions()),
-                (PathMatch::Extension(OsString::from("h")), c_actions()),
-                (PathMatch::Extension(OsString::from("go")), go_actions()),
-                (PathMatch::Name(OsString::from("go.mod")), go_actions()),
-                (PathMatch::Name(OsString::from("go.sum")), go_actions()),
-                (PathMatch::Name(OsString::from("go.work")), go_actions()),
-                (PathMatch::Extension(OsString::from("pl")), perl_actions()),
-                (PathMatch::Extension(OsString::from("pm")), perl_actions()),
-                (PathMatch::Extension(OsString::from("pod")), perl_actions()),
-                (
-                    PathMatch::Name(OsString::from("Makefile.pl")),
-                    perl_actions(),
-                ),
-                (PathMatch::Name(OsString::from("Build.pl")), perl_actions()),
-                (PathMatch::Name(OsString::from("cpanfile")), perl_actions()),
-                (PathMatch::Extension(OsString::from("py")), python_actions()),
-                (
-                    PathMatch::Extension(OsString::from("pyx")),
-                    python_actions(),
-                ),
-                (
-                    PathMatch::Extension(OsString::from("pyw")),
-                    python_actions(),
-                ),
-                (
-                    PathMatch::Extension(OsString::from("pyi")),
-                    python_actions(),
-                ),
-                (
-                    PathMatch::Extension(OsString::from("ipy")),
-                    python_actions(),
-                ),
-                (
-                    PathMatch::Extension(OsString::from("ipynb")),
-                    python_actions(),
-                ),
-                (
-                    PathMatch::Name(OsString::from("pyproject.toml")),
-                    python_dev_actions(),
-                ),
-                (
-                    PathMatch::Name(OsString::from("setup.py")),
-                    python_dev_actions(),
-                ),
-                (
-                    PathMatch::Name(OsString::from("setup.cfg")),
-                    python_dev_actions(),
-                ),
-                (
-                    PathMatch::Name(OsString::from("Pipfile")),
-                    python_dev_actions(),
-                ),
-                (PathMatch::Extension(OsString::from("rs")), rust_actions()),
-                (
-                    PathMatch::Name(OsString::from("Cargo.toml")),
-                    rust_actions(),
-                ),
-            ]
-            .into_iter()
-            .collect(),
-        )
+    pub fn raw_new(hm: HashMap<PathMatch, Actions>) -> Self {
+        Self(hm)
     }
 
     pub fn from_fs(&self, fs_start: PathBuf) -> Env {
@@ -188,7 +72,6 @@ impl EnvBuilder {
             run_steps: run_steps.into_iter().collect::<Vec<_>>(),
         }
     }
-
 }
 
 pub struct Env {
